@@ -1,0 +1,13 @@
+FROM postgres:16
+
+ENV POSTGRES_USER=postgres \
+    POSTGRES_PASSWORD=password \
+    POSTGRES_DB=mydb \
+    TZ=Europe/Moscow \
+    PGTZ=Europe/Moscow
+
+# Копирование init скриптов для инициализации БД
+COPY ./init-db /docker-entrypoint-initdb.d/
+
+# Экспорт порта
+EXPOSE 5432
