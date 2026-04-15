@@ -1,0 +1,85 @@
+# Dockerfile.migrate
+# Версия с автоматическим запуском миграций перед стартом приложения
+
+# Этап 1: Сборка приложения
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+# Установка migrate CLI
+RUN go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s" \
+    -o /app/bin/app \
+    ./cmd/main.go
+
+# Этап 2: Финальный образ
+FROM alpine:3.19
+
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    curl \
+    postgresql-client \
+    bash
+
+ENV TZ=UTC
+
+# Создание скрипта ожидания PostgreSQL
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+echo "Waiting for PostgreSQL to be ready..."\n\
+until pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" 2>/dev/null; do\n\
+  echo "PostgreSQL is unavailable - sleeping"\n\
+  sleep 1\n\
+done\n\
+\n\
+echo "PostgreSQL is ready!"\n\
+' > /usr/local/bin/wait-for-db.sh && chmod +x /usr/local/bin/wait-for-db.sh
+
+# Создание скрипта entrypoint
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Ожидание готовности базы данных\n\
+/usr/local/bin/wait-for-db.sh\n\
+\n\
+# Запуск миграций\n\
+echo "Running database migrations..."\n\
+/app/migrate -path /app/migrations -database "$DATABASE_URL" up\n\
+\n\
+# Запуск приложения\n\
+echo "Starting application..."\n\
+exec /app/app "$@"\n\
+' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+
+WORKDIR /app
+
+# Копирование бинарников
+COPY --from=builder /app/bin/app .
+COPY --from=builder /go/bin/migrate /app/migrate
+
+# Копирование миграций
+COPY --from=builder /app/migrations ./migrations
+
+# Создание пользователя
+RUN adduser -D -u 1000 appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

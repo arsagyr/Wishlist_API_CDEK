@@ -1,0 +1,80 @@
+# docker-compose.yml
+version: '3.9'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Инициализационные скрипты (опционально)
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # Go приложение
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate  # Используем версию с миграциями
+    container_name: go-app
+    environment:
+      # Подключение к PostgreSQL
+      DATABASE_URL: postgres://postgres:password@postgres:5432/mydb?sslmode=disable
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: password
+      DB_NAME: mydb
+      # Дополнительные настройки
+      APP_PORT: 8080
+      GIN_MODE: release
+      TZ: UTC
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # Опционально: pgAdmin для управления БД
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - app-network
+    restart: unless-stopped
+    profiles:
+      - dev  # Запускается только с профилем dev
+
+# Volumes для сохранения данных
+volumes:
+  postgres_data:
+    driver: local
+
+# Сети
+networks:
+  app-network:
+    driver: bridge
